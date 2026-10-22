@@ -9,7 +9,8 @@ A tiny Windows app that keeps the Islamic prayer times in your taskbar.
   ```
 - **A small square in the tray** showing the minutes left (or hours, e.g. `2h`). It turns orange in the last 15 minutes.
 - **Click either one** for today's full list: Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha, plus the Hijri date.
-- **A notification** when each prayer time arrives (optional).
+- **A notification** when each prayer time arrives, with an **optional adhan**: pick any MP3, plus a separate one for Fajr if you like.
+- **Finds your city automatically**, and can keep it updated when you travel.
 - **Works offline.** Whenever you're online it saves at least the next 7 days.
 - Any city in the world, 22 calculation methods, Standard or Hanafi Asr.
 - Follows your light/dark taskbar and your 12h/24h clock setting, and hides during full-screen games and videos.
@@ -21,7 +22,7 @@ Prayer times come from the free [AlAdhan API](https://aladhan.com/prayer-times-a
 
 1. Download **`PrayerTray.exe`** from the [latest release](../../releases/latest).
 2. Put it somewhere permanent, e.g. `C:\Tools\PrayerTray\PrayerTray.exe`.
-3. Double-click it. Enter your city and country, pick your calculation method, and click **Start**.
+3. Double-click it. It detects your city (or type it yourself), pick your calculation method, and click **Start**.
 
 > **"Windows protected your PC"?** The exe isn't code-signed, so SmartScreen warns about new downloads.
 > Click **More info → Run anyway**. You can also [build it yourself](#build-from-source) from the source.
@@ -43,7 +44,18 @@ Windows 11 hides new tray icons behind the **^** arrow next to the clock. Prayer
 | Click the countdown or the square | Opens today's prayer times. Click elsewhere or press Esc to close. |
 | Drag the countdown left/right | Moves it, if it covers something. The position is remembered. |
 | Hover the square | Tooltip, e.g. `Asr in 1h 23m (15:21)` |
+| Adhan playing | Click the notification, the countdown or the square to stop it, or right-click → **Stop adhan** |
 | Right-click either one | Show times, Refresh, Settings, show/hide the countdown, reset its position, Uninstall, Exit |
+
+### Location
+
+Click **Detect my location** in Settings. PrayerTray uses Windows Location when it's turned on (Settings → Privacy & security → Location, including *Let desktop apps access your location*). Otherwise it uses your internet connection's approximate location. Detected locations use exact coordinates, which gives more accurate times than a city name.
+
+Turn on **Update my location automatically when I travel** to re-check every few hours. You'll get a notification if your city changes.
+
+### Adhan
+
+In Settings, under *Notifications*, choose an adhan sound (MP3, WAV or WMA) and press **Play** to test it. You can add a different one for Fajr. The files are copied into PrayerTray's own folder, so it keeps working if you move or delete the originals. The adhan plays at your normal Windows volume, and only while notifications are on.
 
 ## Uninstall
 
@@ -51,7 +63,12 @@ Right-click the icon → **Uninstall…**. This removes it from startup, deletes
 
 ## Privacy
 
-PrayerTray only talks to `api.aladhan.com`, sending the city, country and method you chose. It doesn't use your location and collects nothing. Settings and saved times live in `%APPDATA%\PrayerTray`.
+PrayerTray collects nothing and has no accounts or tracking. It connects to:
+
+- `api.aladhan.com` for prayer times, sending your city/country (or coordinates) and calculation method.
+- **Only when you detect your location** (or have automatic updates on): `api.bigdatacloud.net` to turn Windows Location coordinates into a city name, or `ipapi.co` / `ipwho.is` / `ipinfo.io` to look up the approximate location of your internet connection.
+
+Settings, saved times and adhan files live in `%APPDATA%\PrayerTray`.
 
 ## Build from source
 
@@ -70,11 +87,13 @@ The code is plain C# 5 / WinForms on .NET Framework 4.x, which is preinstalled o
 | File | Purpose |
 | --- | --- |
 | `Program.cs` | Entry point, single-instance check, first-run settings |
-| `TrayApp.cs` | Tray icon, menu, 1-second timer, notifications |
+| `TrayApp.cs` | Tray icon, menu, 1-second timer, notifications, automatic location updates |
 | `Overlay.cs` | The countdown text drawn on the taskbar |
 | `PopupForm.cs` | The prayer-times panel |
 | `SettingsForm.cs` | Settings window |
 | `PrayerData.cs` | AlAdhan API, 7-day offline cache, next-prayer logic |
+| `Locator.cs` | Location detection (Windows Location, then internet-based) |
+| `AdhanPlayer.cs` | Plays the adhan through Windows' built-in media player |
 | `AppSettings.cs` | Settings file, start-with-Windows, calculation methods |
 | `Native.cs` | Win32 calls and DPI helpers |
 
@@ -89,7 +108,7 @@ git push origin v1.0.0
 
 ## Notes
 
-- Times are shown in the city's local time, so your PC clock should be set to the same time zone.
+- Times are shown in the location's local time, so your PC clock should be set to the same time zone. Windows can do this for you: Settings → Time & language → *Set time zone automatically*.
 - Windows has no official way to put text in the taskbar. The countdown is a small transparent window kept on top of it. If you click the taskbar, it can drop behind for up to a second.
 
 ## License

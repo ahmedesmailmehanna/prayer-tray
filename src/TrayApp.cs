@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Text;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -16,13 +17,20 @@ namespace PrayerTray
         readonly NotifyIcon tray;
         readonly PopupForm popup;
         readonly Overlay overlay;
-        readonly Timer timer;
+        readonly System.Windows.Forms.Timer timer;
         readonly ToolStripMenuItem miShowText;
-        Timer pinTimer;
+        System.Windows.Forms.Timer pinTimer;
         int pinTries;
         IntPtr iconHandle = IntPtr.Zero;
         string iconKey = "";
         PrayerTime prevNext;
+        readonly ToolStripMenuItem miStopAdhan;
+
+        // Automatic location updates (runs in the background every few hours)
+        const int LocateEveryHours = 3;
+        DateTime nextLocateAt = DateTime.Now.AddSeconds(15);
+        volatile bool locating;
+        volatile LocationResult locateResult;
 
         public TrayApp(AppSettings cfg)
         {
@@ -37,6 +45,11 @@ namespace PrayerTray
             overlay.DragEnded += delegate { cfg.OverlayOffset = overlay.OffsetX; cfg.Save(); };
 
             var menu = new ContextMenuStrip();
+            miStopAdhan = new ToolStripMenuItem("Stop adhan") { Visible = false };
+            miStopAdhan.Font = new Font(miStopAdhan.Font, FontStyle.Bold);
+            miStopAdhan.Click += delegate { AdhanPlayer.Stop(); };
+            menu.Items.Add(miStopAdhan);
+            menu.Opening += delegate { miStopAdhan.Visible = AdhanPlayer.IsPlaying; };
             menu.Items.Add("Show prayer times", null, delegate { popup.ShowNow(data, data.Next(), Location()); });
             menu.Items.Add("Refresh times", null, delegate { data.ForceRefresh(); Tick(); });
             menu.Items.Add("Settings...", null, delegate { OpenSettings(); });
@@ -53,18 +66,19 @@ namespace PrayerTray
             tray = new NotifyIcon();
             tray.ContextMenuStrip = menu;
             tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) TogglePopup(); };
+            tray.BalloonTipClicked += delegate { AdhanPlayer.Stop(); };
             SetIcon("...", Ui.Icon);
             SetTip("Prayer times: loading...");
             tray.Visible = true;
 
-            timer = new Timer { Interval = 1000 };
+            timer = new System.Windows.Forms.Timer { Interval = 1000 };
             timer.Tick += delegate { Tick(); };
             timer.Start();
             Tick();
 
             if (!cfg.PinAttempted)
             {
-                pinTimer = new Timer { Interval = 1000 };
+                pinTimer = new System.Windows.Forms.Timer { Interval = 1000 };
                 pinTimer.Tick += delegate { TryPinIcon(); };
                 pinTimer.Start();
             }
@@ -72,10 +86,15 @@ namespace PrayerTray
 
         string Location()
         {
-            return cfg.City + ", " + cfg.Country + "  -  " + Methods.Names[Methods.IndexOf(cfg.Method)];
+            return cfg.PlaceName + "  -  " + Methods.Names[Methods.IndexOf(cfg.Method)];
         }
 
-        void TogglePopup() { popup.Toggle(data, data.Next(), Location()); }
+        void TogglePopup()
+        {
+            // While the adhan is playing, a click on the icon or countdown just stops it
+            if (AdhanPlayer.IsPlaying) { AdhanPlayer.Stop(); return; }
+            popup.Toggle(data, data.Next(), Location());
+        }
 
         void Tick()
         {
@@ -96,13 +115,63 @@ namespace PrayerTray
                     SetTip(next.Name + " in " + Fmt.Short(left) + " (" + Fmt.Time(next.Time) + ")");
 
                     if (cfg.Notify && prevNext != null && prevNext.Time != next.Time && (DateTime.Now - prevNext.Time).TotalMinutes < 2)
-                        tray.ShowBalloonTip(8000, "Prayer time", "It's time for " + prevNext.Name, ToolTipIcon.Info);
+                        PrayerTimeArrived(prevNext);
                     prevNext = next;
                 }
                 if (popup.Visible) popup.UpdateView(data, next);
                 overlay.Render(next, cfg.ShowText);
+                CheckLocation();
             }
             catch { }
+        }
+
+        /// <summary>Notification + optional adhan when a prayer time comes in.</summary>
+        void PrayerTimeArrived(PrayerTime p)
+        {
+            string sound = cfg.AdhanFile;
+            if (p.Name == "Fajr" && !string.IsNullOrEmpty(cfg.FajrAdhanFile) && File.Exists(cfg.FajrAdhanFile)) sound = cfg.FajrAdhanFile;
+            bool playing = !string.IsNullOrEmpty(sound) && AdhanPlayer.Play(sound);
+            tray.ShowBalloonTip(playing ? 15000 : 8000, "Prayer time",
+                "It's time for " + p.Name + (playing ? ". Click here to stop the adhan." : "."), ToolTipIcon.Info);
+        }
+
+        /// <summary>When "update my location automatically" is on, re-detect every few hours.</summary>
+        void CheckLocation()
+        {
+            LocationResult found = locateResult;
+            if (found != null)
+            {
+                locateResult = null;
+                ApplyDetectedLocation(found);
+            }
+            if (!cfg.AutoLocate || locating || DateTime.Now < nextLocateAt) return;
+            nextLocateAt = DateTime.Now.AddHours(LocateEveryHours);
+            locating = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { locateResult = Locator.Detect(); } catch { }
+                finally { locating = false; }
+            });
+        }
+
+        void ApplyDetectedLocation(LocationResult r)
+        {
+            if (!cfg.AutoLocate) return;
+            bool sameName = string.Equals(r.City, cfg.City, StringComparison.OrdinalIgnoreCase)
+                         && string.Equals(r.Country, cfg.Country, StringComparison.OrdinalIgnoreCase);
+            // Ignore small jumps (internet-based locations wobble between nearby towns)
+            if (cfg.HasCoords && Locator.DistanceKm(cfg.Latitude, cfg.Longitude, r.Latitude, r.Longitude) < 25) return;
+            if (!cfg.HasCoords && sameName) return;
+
+            cfg.City = r.City;
+            cfg.Country = r.Country;
+            cfg.Latitude = r.Latitude;
+            cfg.Longitude = r.Longitude;
+            cfg.Save();
+            data = new PrayerData(cfg);
+            prevNext = null;
+            if (!sameName)
+                tray.ShowBalloonTip(8000, "Location updated", "Prayer times are now for " + cfg.PlaceName + ".", ToolTipIcon.Info);
         }
 
         void SetTip(string text)
@@ -188,6 +257,7 @@ namespace PrayerTray
             }
             data = new PrayerData(cfg);   // location or method may have changed
             prevNext = null;
+            nextLocateAt = DateTime.Now.AddHours(LocateEveryHours);   // they just set it themselves
             miShowText.Checked = cfg.ShowText;
             Tick();
         }
@@ -207,6 +277,7 @@ namespace PrayerTray
 
         void Quit()
         {
+            AdhanPlayer.Stop();
             timer.Stop();
             if (pinTimer != null) pinTimer.Stop();
             tray.Visible = false;

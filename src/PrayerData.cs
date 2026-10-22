@@ -55,7 +55,10 @@ namespace PrayerTray
             this.cfg = cfg;
             cacheDir = Path.Combine(AppSettings.DataDir, "cache");
             Directory.CreateDirectory(cacheDir);
-            tag = Safe(cfg.City) + "_" + Safe(cfg.Country) + "_m" + cfg.Method + "_s" + cfg.School;
+            string where = cfg.HasCoords
+                ? "geo_" + cfg.Latitude.ToString("0.00", Inv) + "_" + cfg.Longitude.ToString("0.00", Inv)
+                : Safe(cfg.City) + "_" + Safe(cfg.Country);
+            tag = where + "_m" + cfg.Method + "_s" + cfg.School;
         }
 
         static string Safe(string s) { return Regex.Replace(s.Trim(), @"[^\w]", "_"); }
@@ -126,8 +129,22 @@ namespace PrayerTray
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             foreach (string ym in months)
             {
-                string url = PrayerData.ApiBase + "calendarByCity/" + ym + Query(cfg.City, cfg.Country, cfg.Method, cfg.School);
-                var root = Api.Get(url);
+                Dictionary<string, object> root;
+                if (cfg.HasCoords)
+                {
+                    string q = CoordQuery(cfg.Latitude, cfg.Longitude, cfg.Method, cfg.School);
+                    try { root = Api.Get(ApiBase + "calendar/" + ym + q); }
+                    catch (LocationNotFoundException)
+                    {
+                        // Older form of the same endpoint
+                        string[] parts = ym.Split('/');
+                        root = Api.Get(ApiBase + "calendar" + q + "&year=" + parts[0] + "&month=" + parts[1]);
+                    }
+                }
+                else
+                {
+                    root = Api.Get(ApiBase + "calendarByCity/" + ym + Query(cfg.City, cfg.Country, cfg.Method, cfg.School));
+                }
                 object[] days = null;
                 object raw;
                 if (root.TryGetValue("data", out raw)) days = raw as object[];
@@ -193,23 +210,42 @@ namespace PrayerTray
             return "?city=" + Uri.EscapeDataString(city.Trim()) + "&country=" + Uri.EscapeDataString(country.Trim())
                  + "&method=" + method + "&school=" + school;
         }
+
+        public static string CoordQuery(double lat, double lon, int method, int school)
+        {
+            return "?latitude=" + lat.ToString("0.######", Inv) + "&longitude=" + lon.ToString("0.######", Inv)
+                 + "&method=" + method + "&school=" + school;
+        }
+    }
+
+    static class Http
+    {
+        /// <summary>GET a URL and parse the JSON object it returns.</summary>
+        public static Dictionary<string, object> GetJson(string url, int timeoutMs)
+        {
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.Timeout = timeoutMs;
+            req.ReadWriteTimeout = timeoutMs;
+            req.UserAgent = "PrayerTray";
+            req.Accept = "application/json";
+            req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            string body;
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                body = r.ReadToEnd();
+            var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            return ser.DeserializeObject(body) as Dictionary<string, object>;
+        }
     }
 
     static class Api
     {
         public static Dictionary<string, object> Get(string url)
         {
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.Timeout = 15000;
-            req.ReadWriteTimeout = 15000;
-            req.UserAgent = "PrayerTray";
-            req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-            string body;
+            Dictionary<string, object> d;
             try
             {
-                using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                    body = r.ReadToEnd();
+                d = Http.GetJson(url, 15000);
             }
             catch (WebException ex)
             {
@@ -217,16 +253,21 @@ namespace PrayerTray
                 if (hr != null && ((int)hr.StatusCode == 400 || (int)hr.StatusCode == 404)) throw new LocationNotFoundException();
                 throw;
             }
-            var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            var d = ser.DeserializeObject(body) as Dictionary<string, object>;
             if (d == null || Json.Int(d, "code", 0) != 200) throw new LocationNotFoundException();
             return d;
         }
 
-        /// <summary>Checks a location exists. Returns its time zone (e.g. "Europe/Budapest").</summary>
+        /// <summary>Checks a city/country exists. Returns its time zone (e.g. "Europe/Budapest").</summary>
         public static string CheckLocation(string city, string country)
         {
             var d = Get(PrayerData.ApiBase + "timingsByCity" + PrayerData.Query(city, country, 3, 0));
+            return Json.Str(Json.Obj(Json.Obj(d, "data"), "meta"), "timezone", "");
+        }
+
+        /// <summary>Checks prayer times can be calculated for these coordinates.</summary>
+        public static string CheckCoords(double lat, double lon)
+        {
+            var d = Get(PrayerData.ApiBase + "timings" + PrayerData.CoordQuery(lat, lon, 3, 0));
             return Json.Str(Json.Obj(Json.Obj(d, "data"), "meta"), "timezone", "");
         }
     }

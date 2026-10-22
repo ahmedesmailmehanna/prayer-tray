@@ -20,6 +20,19 @@ namespace PrayerTray
         public int OverlayOffset = 0;
         public bool PinAttempted = false;
 
+        // Exact coordinates (set by "Detect my location"). NaN = use City/Country instead.
+        public double Latitude = double.NaN;
+        public double Longitude = double.NaN;
+        public bool AutoLocate = false;
+
+        // Adhan sounds, copied into the data folder. Empty = no sound.
+        public string AdhanFile = "";
+        public string AdhanName = "";
+        public string FajrAdhanFile = "";
+        public string FajrAdhanName = "";
+
+        public bool HasCoords { get { return !double.IsNaN(Latitude) && !double.IsNaN(Longitude); } }
+
         public static string DataDir
         {
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PrayerTray"); }
@@ -27,7 +40,10 @@ namespace PrayerTray
 
         static string FilePath { get { return Path.Combine(DataDir, "settings.json"); } }
 
-        public bool IsConfigured { get { return City.Trim().Length > 0 && Country.Trim().Length > 0; } }
+        public bool IsConfigured { get { return HasCoords || (City.Trim().Length > 0 && Country.Trim().Length > 0); } }
+
+        /// <summary>"Budapest, Hungary" (or just the city when there's no country)</summary>
+        public string PlaceName { get { return Country.Trim().Length > 0 ? City + ", " + Country : City; } }
 
         public static AppSettings Load()
         {
@@ -45,6 +61,13 @@ namespace PrayerTray
                 s.ShowText = Json.Bool(d, "ShowText", s.ShowText);
                 s.OverlayOffset = Json.Int(d, "OverlayOffset", s.OverlayOffset);
                 s.PinAttempted = Json.Bool(d, "PinAttempted", s.PinAttempted);
+                s.Latitude = Json.Dbl(d, "Latitude", double.NaN);
+                s.Longitude = Json.Dbl(d, "Longitude", double.NaN);
+                s.AutoLocate = Json.Bool(d, "AutoLocate", s.AutoLocate);
+                s.AdhanFile = Json.Str(d, "AdhanFile", "");
+                s.AdhanName = Json.Str(d, "AdhanName", "");
+                s.FajrAdhanFile = Json.Str(d, "FajrAdhanFile", "");
+                s.FajrAdhanName = Json.Str(d, "FajrAdhanName", "");
             }
             catch { }
             return s;
@@ -64,6 +87,13 @@ namespace PrayerTray
                 d["ShowText"] = ShowText;
                 d["OverlayOffset"] = OverlayOffset;
                 d["PinAttempted"] = PinAttempted;
+                d["Latitude"] = HasCoords ? (object)Latitude : null;
+                d["Longitude"] = HasCoords ? (object)Longitude : null;
+                d["AutoLocate"] = AutoLocate;
+                d["AdhanFile"] = AdhanFile;
+                d["AdhanName"] = AdhanName;
+                d["FajrAdhanFile"] = FajrAdhanFile;
+                d["FajrAdhanName"] = FajrAdhanName;
                 File.WriteAllText(FilePath, new JavaScriptSerializer().Serialize(d));
             }
             catch { }
@@ -92,6 +122,14 @@ namespace PrayerTray
             string s = Str(d, key, null);
             int r;
             if (s != null && int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out r)) return r;
+            return def;
+        }
+
+        public static double Dbl(Dictionary<string, object> d, string key, double def)
+        {
+            string s = Str(d, key, null);
+            double r;
+            if (s != null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out r)) return r;
             return def;
         }
 
